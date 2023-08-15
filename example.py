@@ -24,6 +24,7 @@ onp.set_printoptions(threshold=sys.maxsize,
                      precision=5)
 
 
+@partial(jax.jit, static_argnums=(1,))
 def explicit_euler(variable, rhs, dt, *args):
     return variable + dt * rhs(variable, *args)
 
@@ -125,6 +126,9 @@ def compute_info(cell, points):
                         'tet_points_j': tet_points_j,
                         'edge_l': edge_l,
                         'proj_area': proj_area,
+                        'normal_N': normal_N,
+                        'normal_M': normal_M,
+                        'normal_L': normal_L,
                         'ind_i': ind_i,
                         'ind_j': ind_j,
                         'B_mats': np.stack((B_N_i, B_N_j, B_M_i, B_M_j, B_L_i, B_L_j))}
@@ -156,6 +160,9 @@ def facet_contribution(info, pos):
     ind_i = info['ind_i']
     ind_j = info['ind_j']
     edge_l = info['edge_l']
+    normal_N = info['normal_N']
+    normal_M = info['normal_M']
+    normal_L = info['normal_L']
     proj_area = info['proj_area']
     Q_i = pos[ind_i][:, None]
     Q_j = pos[ind_j][:, None]
@@ -173,17 +180,33 @@ def facet_contribution(info, pos):
 
     energy = 1./2.*edge_l*proj_area*np.sum(sigma*eps)
 
-    return ind_i, -F_i, ind_j, -F_j, energy
+    facet_force_i = proj_area*(sigma_N*normal_N + sigma_M*normal_M + sigma_L*normal_L)
+    facet_force_j = -facet_force_i
+
+    return ind_i, -F_i, ind_j, -F_j, energy, facet_force_i, facet_force_j
 
 facet_contributions = jax.vmap(facet_contribution, in_axes=(0, None))
 
 
+@jax.jit
+def compute_node_forces(state, bundled_info):
+    pos = state[:, :6]
+    inds_i, _, inds_j, _, _, facet_forces_i, facet_forces_j = facet_contributions(bundled_info, pos)
+    inds = np.hstack((inds_i, inds_j))
+    facet_forces = np.vstack((facet_forces_i, facet_forces_j))
+    node_forces = np.zeros((len(pos, 3)))
+    node_forces = node_forces.at[inds].add(facet_forces)
+    return node_forces
+
+
+@jax.jit
 def compute_elastic_energy(state, bundled_info):
     pos = state[:, :6]
-    _, _, _, _, energy = facet_contributions(bundled_info, pos)
+    _, _, _, _, energy, _, _ = facet_contributions(bundled_info, pos)
     return np.sum(energy)
 
 
+@jax.jit
 def compute_kinetic_energy(state, true_ms):
     vel = state[:, 6:]
     def node_ke(node_vel, node_mass):
@@ -198,18 +221,24 @@ def rhs_func(state, bundled_info, mass):
     pos = state[:, :6]
     vel = state[:, 6:]
  
-    inds_i, forces_i, inds_j, forces_j, _ = facet_contributions(bundled_info, pos)
+    inds_i, forces_i, inds_j, forces_j, _, _, _ = facet_contributions(bundled_info, pos)
 
     inds = np.hstack((inds_i, inds_j))
-    forces = np.vstack((forces_i, forces_j))
-    node_forces = np.zeros((pos.shape))
-    node_forces = node_forces.at[inds].add(forces)
+    reactions = np.vstack((forces_i, forces_j))
+    node_reactions = np.zeros((pos.shape))
+    node_reactions = node_reactions.at[inds].add(reactions)
 
     def de_mass(node_pos, node_mass):
         return np.linalg.solve(node_mass, node_pos)
 
     pos_rhs = vel
-    vel_rhs = jax.vmap(de_mass)(node_forces, mass)
+    vel_rhs = jax.vmap(de_mass)(node_reactions, mass)
+
+    damping_v = 1e1 * 0.
+    damping_w = 1e1 * 0.
+    damping_rhs = -np.hstack((damping_v*vel[:, :3], damping_w*vel[:, 3:])) 
+
+    vel_rhs += damping_rhs
 
     rhs = np.hstack((pos_rhs, vel_rhs))
 
@@ -296,6 +325,7 @@ def process_tet_point_sol(points, bundled_info, state):
     return tets_u
 
 
+@jax.jit
 def apply_bc(state, inds_node, inds_var, values):
     state = state.at[inds_node, inds_var].set(values)
     return state
@@ -338,7 +368,7 @@ def simulation_one_tet():
     for i in range(len(ts[1:])):
         print(f"Step {i}")
         dt = ts[i + 1] - ts[i]
-        state = runge_kutta_4(state, rhs_func, dt, bundled_info, node_true_ms)
+        state = runge_kutta_4(state, rhs_func, dt, bundled_info, node_true_ms) # runge_kutta_4, explicit_euler
 
         if i % 10 == 0:
             vtk_path = os.path.join(vtk_dir, f'u_{i:05d}.vtu')
@@ -352,28 +382,50 @@ def simulation_one_tet():
  
 
 
-def exp():
-    Nx, Ny, Nz = 10, 10, 10
+def simulation_cube():
+    files = glob.glob(os.path.join(vtk_dir, f'*'))
+    for f in files:
+        os.remove(f)
+
+    Nx, Ny, Nz = 5, 5, 5
     Lx, Ly, Lz = 1., 1., 1.
     meshio_mesh = box_mesh(Nx=Nx, Ny=Ny, Nz=Nz, Lx=Lx, Ly=Ly, Lz=Lz, data_dir=data_dir)
     cell_type = 'tetra'
     points, cells = np.array(meshio_mesh.points), np.array(meshio_mesh.cells_dict[cell_type])
+    N_nodes = len(points)
 
     bottom_inds_node = np.argwhere(points[:, 2] < 1e-5).reshape(-1)
     top_inds_node = np.argwhere(points[:, 2] > Lz - 1e-5).reshape(-1)
-    bottom_inds_tiled = np.tile(bottom_inds_node, 6)
-    top_inds_tiled = np.tile(top_inds_node, 6) 
-    inds_node = np.hstack((bottom_inds_tiled, top_inds_tiled))
     N_btm_ind = len(bottom_inds_node)
     N_tp_ind = len(top_inds_node)
-    bottom_inds_var = np.repeat(np.arange(6), N_btm_ind)
-    top_inds_var = np.repeat(np.arange(6), N_tp_ind)
+
+
+    # bottom_inds_tiled = np.tile(bottom_inds_node, 4)
+    # top_inds_tiled = np.tile(top_inds_node, 4) 
+    # inds_node = np.hstack((bottom_inds_tiled, top_inds_tiled))
+    # bottom_inds_var = np.repeat(np.array([2, 3, 4, 5]), N_btm_ind)
+    # top_inds_var = np.repeat(np.array([2, 3, 4, 5]), N_tp_ind)
+    # inds_var = np.hstack((bottom_inds_var, top_inds_var))
+
+    # @jax.jit
+    # def update_bc_val(disp):
+    #     bottom_vals = np.zeros(N_btm_ind*4)
+    #     top_vals = np.hstack((disp*np.ones(N_btm_ind), np.zeros(N_btm_ind*3)))
+    #     values = np.hstack((bottom_vals, top_vals))
+    #     return values
+
+
+    bottom_inds_tiled = np.tile(bottom_inds_node, 12)
+    top_inds_tiled = np.tile(top_inds_node, 12) 
+    inds_node = np.hstack((bottom_inds_tiled, top_inds_tiled))
+    bottom_inds_var = np.repeat(np.arange(12), N_btm_ind)
+    top_inds_var = np.repeat(np.arange(12), N_tp_ind)
     inds_var = np.hstack((bottom_inds_var, top_inds_var))
 
-
+    @jax.jit
     def update_bc_val(disp):
-        bottom_vals = np.zeros(N_btm_ind*6)
-        top_vals = np.hstack((np.zeros(N_btm_ind*2), disp*np.ones(N_btm_ind), np.zeros(N_btm_ind*3)))
+        bottom_vals = np.zeros(N_btm_ind*12)
+        top_vals = np.hstack((np.zeros(N_btm_ind*2), disp*np.ones(N_btm_ind), np.zeros(N_btm_ind*9)))
         values = np.hstack((bottom_vals, top_vals))
         return values
 
@@ -391,31 +443,50 @@ def exp():
 
     # qlts = check_mesh_TET4(tet_points, tet_cells)
     # print(qlts)
-
     
-    state = np.zeros((len(points), 6))
-    mass = lumped_mass(state, bundled_info)
+    state = np.zeros((len(points), 12))
+    node_true_ms, node_lumped_ms = compute_mass(N_nodes, bundled_info)
 
-    t_total = 0.01
-    ts = np.linspace(0., t_total, 11)
+
+    vtk_path = os.path.join(data_dir, f'vtk/u_{0:05d}.vtu')
+    tets_u = process_tet_point_sol(points, bundled_info, state)
+    save_sol(tet_points, tet_cells, vtk_path, point_infos=[('u', tets_u)])
+
+    # t_total = 0.01
+    dt = 1e-4
+    ts = np.arange(0., dt*1001, dt)
     for i in range(len(ts[1:])):
         print(f"Step {i}")
         dt = ts[i + 1] - ts[i]
-        state = runge_kutta_4(state, rhs_func, dt, bundled_info, mass)
-        bc_vals = update_bc_val(ts[i+1]*Lz)
+        state = runge_kutta_4(state, rhs_func, dt, bundled_info, node_true_ms)
+
+        crt_t = ts[i + 1]
+        max_load = 0.1
+        total_load_step = 100
+        crt_load = (i + 1)/total_load_step*max_load
+
+        bc_z_val = np.minimum(crt_load, max_load)
+
+        bc_vals = update_bc_val(bc_z_val)
         state = apply_bc(state, inds_node, inds_var, bc_vals)
 
-        vtk_path = os.path.join(data_dir, f'vtk/u_{i:05d}.vtu')
-        tets_u = process_tet_point_sol(points, bundled_info, state)
-        save_sol(tet_points, tet_cells, vtk_path, point_infos=[('u', tets_u)])
+        if (i + 1) % 10 == 0:
+            vtk_path = os.path.join(data_dir, f'vtk/u_{i + 1:05d}.vtu')
+            tets_u = process_tet_point_sol(points, bundled_info, state)
+            save_sol(tet_points, tet_cells, vtk_path, point_infos=[('u', tets_u)])
+
+            ee = compute_elastic_energy(state, bundled_info)
+            ke = compute_kinetic_energy(state, node_true_ms)
+            print(f"ee = {ee}, ke = {ke}, ee + ke = {ee + ke}")
+
+    print(state[:, :])
 
 
-    # print(mass)
     # print(np.sum(mass, axis=0))
     # rhs_vals = rhs_func(initial_state, bundled_info, mass)
     # tets_u = process_tet_point_sol(points, bundled_info, initial_state)
 
-    save_sol(tet_points, tet_cells, vtk_path, point_infos=[('u', tets_u)])
+    # save_sol(tet_points, tet_cells, vtk_path, point_infos=[('u', tets_u)])
 
     # print(rhs_vals)
 
@@ -423,6 +494,6 @@ def exp():
 
 
 if __name__ == '__main__':
-    # exp()
-    simulation_one_tet()
+    simulation_cube()
+    # simulation_one_tet()
 
