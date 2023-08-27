@@ -1,8 +1,5 @@
 import os
 
-data_path = os.path.join(os.path.dirname(__file__), 'data')
-
-
 def make_video(data_dir):
     # The command -pix_fmt yuv420p is to ensure preview of video on Mac OS is
     # enabled
@@ -16,6 +13,3 @@ def make_video(data_dir):
     os.system(
         f'ffmpeg -y -framerate 10 -i {data_dir}/png/tmp/u.%04d.png -pix_fmt yuv420p -vf \
                "crop=trunc(iw/2)*2:trunc(ih/2)*2" {data_dir}/mp4/test.mp4') # noqa
-
-
-make_video(data_path)
