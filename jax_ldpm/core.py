@@ -139,19 +139,21 @@ compute_info_vmap = jax.jit(jax.vmap(compute_info, in_axes=(0, None)))
 
 
 
-def stress_fn(eps):
+def stress_fn(eps, params):
     eps_N, eps_M, eps_L = eps
-    E = 1e7
-    nu = 0.2
-    E0 = 1./(1. - 2*nu)*E
-    alpha = (1. - 4.*nu)/(1. + nu)
+    E0 = params['E0']
+    alpha = params['alpha']
+    # E = 1e7
+    # nu = 0.2
+    # E0 = 1./(1. - 2*nu)*E
+    # alpha = (1. - 4.*nu)/(1. + nu)
     E_N = E0
     E_T = alpha*E0
     sigma = np.array([E_N*eps_N, E_T*eps_M, E_T*eps_L])
     return sigma
 
 
-def facet_contribution(info, pos):
+def facet_contribution(info, params, pos):
     B_N_i, B_N_j, B_M_i, B_M_j, B_L_i, B_L_j = info['B_mats']
     ind_i = info['ind_i']
     ind_j = info['ind_j']
@@ -168,7 +170,7 @@ def facet_contribution(info, pos):
     eps_L = (B_L_j @ Q_j - B_L_i @ Q_i).squeeze()
     
     eps = np.array([eps_N, eps_M, eps_L])
-    sigma = stress_fn(eps)
+    sigma = stress_fn(eps, params)
     sigma_N, sigma_M, sigma_L = sigma
 
     F_i = -edge_l*proj_area*(sigma_N*B_N_i + sigma_M*B_M_i + sigma_L*B_L_i).squeeze()
@@ -181,24 +183,24 @@ def facet_contribution(info, pos):
 
     return ind_i, -F_i, ind_j, -F_j, energy, facet_force_i, facet_force_j
 
-facet_contributions = jax.vmap(facet_contribution, in_axes=(0, None))
+facet_contributions = jax.vmap(facet_contribution, in_axes=(0, None, None))
 
 
 @jax.jit
-def compute_node_forces(state, bundled_info):
+def compute_node_forces(state, bundled_info, params):
     pos = state[:, :6]
-    inds_i, _, inds_j, _, _, facet_forces_i, facet_forces_j = facet_contributions(bundled_info, pos)
+    inds_i, _, inds_j, _, _, facet_forces_i, facet_forces_j = facet_contributions(bundled_info, params, pos)
     inds = np.hstack((inds_i, inds_j))
     facet_forces = np.vstack((facet_forces_i, facet_forces_j))
-    node_forces = np.zeros((len(pos, 3)))
+    node_forces = np.zeros((len(pos), 3))
     node_forces = node_forces.at[inds].add(facet_forces)
     return node_forces
 
 
 @jax.jit
-def compute_elastic_energy(state, bundled_info):
+def compute_elastic_energy(state, bundled_info, params):
     pos = state[:, :6]
-    _, _, _, _, energy, _, _ = facet_contributions(bundled_info, pos)
+    _, _, _, _, energy, _, _ = facet_contributions(bundled_info, params, pos)
     return np.sum(energy)
 
 
@@ -213,11 +215,11 @@ def compute_kinetic_energy(state, true_ms):
     return np.sum(energy)
     
 
-def rhs_func(state, bundled_info, mass):
+def rhs_func(state, bundled_info, mass, params):
     pos = state[:, :6]
     vel = state[:, 6:]
  
-    inds_i, forces_i, inds_j, forces_j, _, _, _ = facet_contributions(bundled_info, pos)
+    inds_i, forces_i, inds_j, forces_j, _, _, _ = facet_contributions(bundled_info, params, pos)
 
     inds = np.hstack((inds_i, inds_j))
     reactions = np.vstack((forces_i, forces_j))
@@ -232,6 +234,10 @@ def rhs_func(state, bundled_info, mass):
 
     damping_v = 1e1 * 0.
     damping_w = 1e1 * 0.
+
+    damping_v = params['damping_v']
+    damping_w = params['damping_w']
+
     damping_rhs = -np.hstack((damping_v*vel[:, :3], damping_w*vel[:, 3:])) 
 
     vel_rhs += damping_rhs
@@ -249,7 +255,7 @@ def cross_prod_w_to_Omega(w):
                      [-w[1],  w[0],    0.]])
 
 
-def compute_mass(N_nodes, bundled_info):
+def compute_mass(N_nodes, bundled_info, params):
     tet_points_i = bundled_info['tet_points_i']
     tet_points_j = bundled_info['tet_points_j']
     inds_i = bundled_info['ind_i']
@@ -299,11 +305,25 @@ def compute_mass(N_nodes, bundled_info):
     node_lumped_ms = np.zeros((N_nodes, 6))
     node_lumped_ms = node_lumped_ms.at[inds].add(lumped_ms)
 
-    rho = 1e3
+    # rho = 1e3
+    rho = params['rho']
     node_true_ms *= rho
     node_lumped_ms *= rho
 
     return node_true_ms, node_lumped_ms
+
+
+def split_tets(cells, points):
+    bundled_info = compute_info_vmap(cells, points)
+    bundled_info = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:]), bundled_info)
+    tet_points = np.vstack((bundled_info['tet_points_i'].reshape(-1, 3), 
+                            bundled_info['tet_points_j'].reshape(-1, 3)))
+    tet_cells = np.arange(len(tet_points)).reshape(-1, 4)
+    # TODO: tet quality check
+    # qlts = check_mesh_TET4(points, cells)
+    # tet_qlts = check_mesh_TET4(tet_points, tet_cells)
+    # print(qlts, tet_qlts)
+    return bundled_info, tet_cells, tet_points
 
 
 @jax.jit
