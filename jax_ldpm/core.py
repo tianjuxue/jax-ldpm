@@ -9,32 +9,59 @@ import glob
 import sys
 from functools import partial
 
-from jax_ldpm.tetrahedron import tetrahedra_volumes, tetra_first_moments_helper, tetra_inertia_tensors_helper
+from jax_ldpm.tetrahedron import tetrahedra_volumes, tetra_first_moments_helper, tetra_inertia_tensors_helper, signed_tetrahedra_volumes
+from jax_ldpm.constitutive import stress_fn
 
+# TODO: conflict of dt
 
 # config.update("jax_enable_x64", True)
 
-onp.set_printoptions(threshold=sys.maxsize,
-                     linewidth=1000,
-                     suppress=True,
-                     precision=5)
+# onp.set_printoptions(threshold=sys.maxsize,
+#                      linewidth=1000,
+#                      suppress=True,
+#                      precision=5)
+
+
+# @partial(jax.jit, static_argnums=(1,))
+# def explicit_euler(node_var, rhs_func, dt, *args):
+#     return node_var + dt * rhs_func(node_var, *args)
 
 
 @partial(jax.jit, static_argnums=(1,))
-def explicit_euler(variable, rhs, dt, *args):
-    return variable + dt * rhs(variable, *args)
+def runge_kutta_4(node_var, rhs_func, dt, *args):
+    # bundled_info is useless - Only works for elastic problem
+    def node_rhs(node_var, *args):
+        pos = node_var[:, :6]
+        vel = node_var[:, 6:]
+        vel_rhs, bundled_info = rhs_func(pos, vel, dt, *args)
+        pos_rhs = vel
+        node_var = np.hstack((pos_rhs, vel_rhs))
+        return node_var, bundled_info
 
-
-@partial(jax.jit, static_argnums=(1,))
-def runge_kutta_4(variable, rhs, dt, *args):
-    y_0 = variable
-    k_0 = rhs(y_0, *args)
-    k_1 = rhs(y_0 + dt/2 * k_0, *args)
-    k_2 = rhs(y_0 + dt/2 * k_1, *args)
-    k_3 = rhs(y_0 + dt * k_2, *args)
+    y_0 = node_var
+    k_0, _ = node_rhs(y_0, *args)
+    k_1, _ = node_rhs(y_0 + dt/2 * k_0, *args)
+    k_2, _ = node_rhs(y_0 + dt/2 * k_1, *args)
+    k_3, _ = node_rhs(y_0 + dt * k_2, *args)
     k = 1./6. * (k_0 + 2. * k_1 + 2. * k_2 + k_3)
     y_1 = y_0 + dt * k
-    return y_1
+    return y_1, _
+
+
+@partial(jax.jit, static_argnums=(1,))
+def leapfrog(node_var, rhs_func, dt, *args):
+    pos = node_var[:, :6] # Step n
+    vel = node_var[:, 6:] # Step n - 1/2
+    # facet_var updated through bundled_info
+    # Input facet_var: Step n - 1
+    # Output facet_var: Step n
+    vel_rhs, bundled_info = rhs_func(pos, vel, dt, *args)
+    vel += dt*vel_rhs # Step n + 1/2
+    pos += dt*vel # Step n + 1
+    node_var = np.hstack((pos, vel))
+    return node_var, bundled_info
+
+
 
 
 def check_mesh_TET4(points, cells):
@@ -66,7 +93,7 @@ def get_A_matrix(x_i, x):
 
 
 
-def compute_info(cell, points):
+def compute_info(cell, cell_id, points, params):
     cell_centroid = np.mean(points[cell], axis=0)
     # Ordered in a way that all tets are in positive orientation
     inds = np.array([[0, 1, 2],
@@ -86,7 +113,7 @@ def compute_info(cell, points):
     inds_j = cell[inds[:, 1]]
     inds_nb = cell[inds[:, 2]]
 
-    def compute_info_helper(ind_i, ind_j, ind_nb):
+    def compute_info_helper(ind_i, ind_j, ind_nb, cell_id, params):
         point_i = points[ind_i]
         point_j = points[ind_j]
         point_nb = points[ind_nb]
@@ -118,39 +145,69 @@ def compute_info(cell, points):
         B_L_i = 1./edge_l * normal_L[None, :] @ A_i
         B_L_j = 1./edge_l * normal_L[None, :] @ A_j
 
+
+        chi = 0.99
+        ft = params['ft'] # Tensile Strength
+        E0 = params['E0'] # Young Modulus # GC: This should be EN=E0
+        chLen = params['chLen'] # Tensile characteristic length
+        aLength = edge_l
+
+        def f1():
+            st = ft
+            # if (aLength.lt.1.0d-10) then
+            #    write(*,*)'Warning: aLength in critical range; continuation may produce numerical issues.'     
+            # endif
+            # if (aLength.eq.chLen) then
+            #   write(*,*)'Warning: aLength equals chLen; continuation may produce numerical issues.'
+            # endif
+            aKt = 2. * E0 / (-1. + chLen / aLength)
+            return st, aKt
+
+        def f2():
+            aKt = 2. * E0 / (-1. + 1. / chi);
+            st = ft * np.sqrt(np.abs(chi * chLen / aLength))
+            # Write(*,*)'Warning: Edge length > tensile characteristic length'
+            return st, aKt
+
+        st, aKt = jax.lax.cond(aLength < chi * chLen, f1, f2)
+
+
         bundled_info = {'tet_points_i': tet_points_i,
                         'tet_points_j': tet_points_j,
                         'edge_l': edge_l,
+                        'st': st,
+                        'aKt': aKt,
                         'proj_area': proj_area,
                         'normal_N': normal_N,
                         'normal_M': normal_M,
                         'normal_L': normal_L,
                         'ind_i': ind_i,
                         'ind_j': ind_j,
+                        'cell_id': cell_id,
                         'B_mats': np.stack((B_N_i, B_N_j, B_M_i, B_M_j, B_L_i, B_L_j))}
 
         return bundled_info
 
-    compute_info_helper_vmap = jax.vmap(compute_info_helper)
+    compute_info_helper_vmap = jax.vmap(compute_info_helper, in_axes=(0, 0, 0, None, None))
 
-    return compute_info_helper_vmap(inds_i, inds_j, inds_nb)
+    return compute_info_helper_vmap(inds_i, inds_j, inds_nb, cell_id, params)
 
-compute_info_vmap = jax.jit(jax.vmap(compute_info, in_axes=(0, None)))
+compute_info_vmap = jax.jit(jax.vmap(compute_info, in_axes=(0, 0, None, None)))
 
 
 
-def stress_fn(eps, params):
-    eps_N, eps_M, eps_L = eps
-    E0 = params['E0']
-    alpha = params['alpha']
-    # E = 1e7
-    # nu = 0.2
-    # E0 = 1./(1. - 2*nu)*E
-    # alpha = (1. - 4.*nu)/(1. + nu)
-    E_N = E0
-    E_T = alpha*E0
-    sigma = np.array([E_N*eps_N, E_T*eps_M, E_T*eps_L])
-    return sigma
+# def stress_fn(eps, params):
+#     eps_N, eps_M, eps_L = eps
+#     E0 = params['E0']
+#     alpha = params['alpha']
+#     # E = 1e7
+#     # nu = 0.2
+#     # E0 = 1./(1. - 2*nu)*E
+#     # alpha = (1. - 4.*nu)/(1. + nu)
+#     E_N = E0
+#     E_T = alpha*E0
+#     sigma = np.array([E_N*eps_N, E_T*eps_M, E_T*eps_L])
+#     return sigma
 
 
 def facet_contribution(info, params, pos):
@@ -162,6 +219,8 @@ def facet_contribution(info, params, pos):
     normal_M = info['normal_M']
     normal_L = info['normal_L']
     proj_area = info['proj_area']
+    epsV = info['epsV']
+    stv = info['stv']
     Q_i = pos[ind_i][:, None]
     Q_j = pos[ind_j][:, None]
 
@@ -170,7 +229,17 @@ def facet_contribution(info, params, pos):
     eps_L = (B_L_j @ Q_j - B_L_i @ Q_i).squeeze()
     
     eps = np.array([eps_N, eps_M, eps_L])
-    sigma = stress_fn(eps, params)
+
+    # sigma = stress_fn(eps, params)
+    
+    dt = params['dt']
+    stv = stress_fn(eps, epsV, stv, dt, info, params)
+
+    info['stv'] = stv
+
+    sigma = stv[1:4]
+
+
     sigma_N, sigma_M, sigma_L = sigma
 
     F_i = -edge_l*proj_area*(sigma_N*B_N_i + sigma_M*B_M_i + sigma_L*B_L_i).squeeze()
@@ -181,15 +250,26 @@ def facet_contribution(info, params, pos):
     facet_force_i = proj_area*(sigma_N*normal_N + sigma_M*normal_M + sigma_L*normal_L)
     facet_force_j = -facet_force_i
 
-    return ind_i, -F_i, ind_j, -F_j, energy, facet_force_i, facet_force_j
+    return ind_i, -F_i, ind_j, -F_j, energy, facet_force_i, facet_force_j, info
 
 facet_contributions = jax.vmap(facet_contribution, in_axes=(0, None, None))
 
 
+
+def compute_epsV(pos, bundled_info, params):
+    u = pos[:, :3]
+    crt_points = params['points'] + u
+    facet_vols = compute_facet_vols(params['cells'], crt_points, bundled_info)
+    facet_vols_initial = bundled_info['facet_vols_initial']
+    epsV = (facet_vols - facet_vols_initial)/facet_vols_initial
+    bundled_info['epsV'] = epsV
+    return bundled_info
+
+
 @jax.jit
-def compute_node_forces(state, bundled_info, params):
-    pos = state[:, :6]
-    inds_i, _, inds_j, _, _, facet_forces_i, facet_forces_j = facet_contributions(bundled_info, params, pos)
+def compute_node_forces(node_var, bundled_info, params):
+    pos = node_var[:, :6]
+    inds_i, _, inds_j, _, _, facet_forces_i, facet_forces_j, _ = facet_contributions(bundled_info, params, pos)
     inds = np.hstack((inds_i, inds_j))
     facet_forces = np.vstack((facet_forces_i, facet_forces_j))
     node_forces = np.zeros((len(pos), 3))
@@ -198,15 +278,15 @@ def compute_node_forces(state, bundled_info, params):
 
 
 @jax.jit
-def compute_elastic_energy(state, bundled_info, params):
-    pos = state[:, :6]
-    _, _, _, _, energy, _, _ = facet_contributions(bundled_info, params, pos)
+def compute_elastic_energy(node_var, bundled_info, params):
+    pos = node_var[:, :6]
+    _, _, _, _, energy, _, _, _ = facet_contributions(bundled_info, params, pos)
     return np.sum(energy)
 
 
 @jax.jit
-def compute_kinetic_energy(state, true_ms):
-    vel = state[:, 6:]
+def compute_kinetic_energy(node_var, true_ms):
+    vel = node_var[:, 6:]
     def node_ke(node_vel, node_mass):
         ke = 0.5*node_vel[None, :] @ node_mass @ node_vel[:, None]
         return ke.squeeze()
@@ -215,11 +295,11 @@ def compute_kinetic_energy(state, true_ms):
     return np.sum(energy)
     
 
-def rhs_func(state, bundled_info, mass, params):
-    pos = state[:, :6]
-    vel = state[:, 6:]
- 
-    inds_i, forces_i, inds_j, forces_j, _, _, _ = facet_contributions(bundled_info, params, pos)
+def rhs_func(pos, vel, dt, bundled_info, mass, params):
+
+    bundled_info = compute_epsV(pos, bundled_info, params)
+
+    inds_i, forces_i, inds_j, forces_j, _, _, _, bundled_info = facet_contributions(bundled_info, params, pos)
 
     inds = np.hstack((inds_i, inds_j))
     reactions = np.vstack((forces_i, forces_j))
@@ -229,11 +309,8 @@ def rhs_func(state, bundled_info, mass, params):
     def de_mass(node_pos, node_mass):
         return np.linalg.solve(node_mass, node_pos)
 
-    pos_rhs = vel
+ 
     vel_rhs = jax.vmap(de_mass)(node_reactions, mass)
-
-    damping_v = 1e1 * 0.
-    damping_w = 1e1 * 0.
 
     damping_v = params['damping_v']
     damping_w = params['damping_w']
@@ -242,11 +319,10 @@ def rhs_func(state, bundled_info, mass, params):
 
     vel_rhs += damping_rhs
 
-    rhs = np.hstack((pos_rhs, vel_rhs))
-
+ 
     # rhs_vals /= mass
 
-    return rhs
+    return vel_rhs, bundled_info
 
 
 def cross_prod_w_to_Omega(w):
@@ -313,12 +389,23 @@ def compute_mass(N_nodes, bundled_info, params):
     return node_true_ms, node_lumped_ms
 
 
-def split_tets(cells, points):
-    bundled_info = compute_info_vmap(cells, points)
+def compute_facet_vols(cells, points, bundled_info):
+    points_transposed = np.transpose(points[cells], axes=(1, 0, 2))
+    cell_vols = signed_tetrahedra_volumes(*points_transposed)
+    facet_vols = cell_vols[bundled_info['cell_id']]
+    return facet_vols
+
+
+def split_tets(cells, points, params):
+    bundled_info = compute_info_vmap(cells, np.arange(len(cells)), points, params)
     bundled_info = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:]), bundled_info)
     tet_points = np.vstack((bundled_info['tet_points_i'].reshape(-1, 3), 
                             bundled_info['tet_points_j'].reshape(-1, 3)))
     tet_cells = np.arange(len(tet_points)).reshape(-1, 4)
+
+    bundled_info['facet_vols_initial'] = compute_facet_vols(cells, points, bundled_info)
+    bundled_info['stv'] = np.zeros((len(bundled_info['facet_vols_initial']), 22))
+
     # TODO: tet quality check
     # qlts = check_mesh_TET4(points, cells)
     # tet_qlts = check_mesh_TET4(tet_points, tet_cells)
@@ -327,8 +414,8 @@ def split_tets(cells, points):
 
 
 @jax.jit
-def process_tet_point_sol(points, bundled_info, state):
-    pos = state[:, :6]
+def process_tet_point_sol(points, bundled_info, node_var):
+    pos = node_var[:, :6]
     tets_x = np.vstack((bundled_info['tet_points_i'], bundled_info['tet_points_j']))
     inds = np.hstack((bundled_info['ind_i'], bundled_info['ind_j']))
     def get_disp(tet_x, ind):
@@ -342,6 +429,6 @@ def process_tet_point_sol(points, bundled_info, state):
 
 
 @jax.jit
-def apply_bc(state, inds_node, inds_var, values):
-    state = state.at[inds_node, inds_var].set(values)
-    return state
+def apply_bc(node_var, inds_node, inds_var, values):
+    node_var = node_var.at[inds_node, inds_var].set(values)
+    return node_var
