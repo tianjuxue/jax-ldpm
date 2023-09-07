@@ -1,5 +1,5 @@
 import os
-import gmsh
+# import gmsh
 import numpy as onp
 import meshio
 

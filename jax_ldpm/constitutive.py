@@ -6,17 +6,49 @@ from jax.experimental import checkify
 # https://jax.readthedocs.io/en/latest/debugging/index.html
 
 
-def safe_divide(x, y):
-    return np.where(y == 0., 0., x/y)
+# def safe_divide(x, y):
+#     return np.where(y == 0., 0., x/y)
 
 
-def stress_fn(eps, epsV, stv, dt, info, params):
+safe_divide = lambda x, y: np.where(y == 0., 0., x/y)
+safe_plus = lambda x: 0.5*(x + np.abs(x))
+
+def calc_st_sKt(params, aLength):
+    chi = 0.99
+    ft = params['ft'] # Tensile Strength
+    E0 = params['E0'] # Young Modulus # GC: This should be EN=E0
+    chLen = params['chLen'] # Tensile characteristic length
+
+    def f1():
+        st = ft
+        # if (aLength.lt.1.0d-10) then
+        #    write(*,*)'Warning: aLength in critical range; continuation may produce numerical issues.'     
+        # endif
+        # if (aLength.eq.chLen) then
+        #   write(*,*)'Warning: aLength equals chLen; continuation may produce numerical issues.'
+        # endif
+        aKt = 2. * E0 / (-1. + chLen / aLength)
+        return st, aKt
+
+    def f2():
+        aKt = 2. * E0 / (-1. + 1. / chi);
+        st = ft * np.sqrt(np.abs(chi * chLen / aLength))
+        # Write(*,*)'Warning: Edge length > tensile characteristic length'
+        return st, aKt
+
+    st, aKt = jax.lax.cond(aLength < chi * chLen, f1, f2)
+    return st, aKt
+
+
+
+def stress_fn(eps, epsV, stv, info, params):
     # Variables omitted:
     # nprops, props, rbv, RateEffectFlag
 
     # LDPM MATERIAL MODEL
     #  
     # LDPM Facet Constitutive Law - Cusatis/Rezakhani Oct 2019
+    # Copied from Fortran code and transformed to Python code by Tianju Aug 2023
     #
     # stv state variable
     # stv[1]  Normal N stress
@@ -65,6 +97,7 @@ def stress_fn(eps, epsV, stv, dt, info, params):
     dk3           = params['dk3']           # Final hardening modulus ratio
     EAF           = params['EAF']           # ElasticAnalysisFlag
 
+    dt = params['dt']
     st = info['st']
     aKt = info['aKt']
     aLength = info['edge_l']
@@ -78,7 +111,7 @@ def stress_fn(eps, epsV, stv, dt, info, params):
         stv = stv.at[1].set(0.)
         stv = stv.at[2].set(0.)
         stv = stv.at[3].set(0.)
-        stv = stv.at[4].add(DepsN) # Wwhy only add DepsN?
+        stv = stv.at[4].add(DepsN) # Why only add DepsN?
 
         stv_tmp = stv.at[13].add(DepsN*aLength)
         stv_tmp = stv_tmp.at[14].add(DepsM*aLength)
@@ -158,7 +191,8 @@ def stress_fn(eps, epsV, stv, dt, info, params):
 
                 rat = ss / sqalpha / st
                 rat2 = rat*rat 
-                s0 = np.where(cteta > 1e-10, st*(-steta + np.sqrt(np.abs(steta2 + 4.*cteta2/rat2))) / (2.*cteta2/rat2), st)
+                EPS = 1e-3
+                s0 = np.where(cteta > EPS, st*(-steta + np.sqrt(np.abs(steta2 + 4.*cteta2/rat2))) / (2.*cteta2/rat2), st)
 
                 ep0 = s0 / E0
                 # checkify.check((ateta >= 0.) | (sen_c >= 1.), 'Warning: ateta and sec_c in ranges to produce exponent failure')
@@ -192,10 +226,13 @@ def stress_fn(eps, epsV, stv, dt, info, params):
                 epsV0 = 0.1*ec
                 aKc   = RinHardMod*E0
                 aKc1  = E0*dk3
-
                 tmp = np.where(epsV < 0., dk2*(-np.abs(epsD) / (epsV-epsV0) - dk1), dk2*(np.abs(epsD) / (epsV0) - dk1))
                 phiD = np.where(tmp >= 0., 1. / (1. + tmp), phiD)
                 aKcc =  (aKc - aKc1) * phiD + aKc1
+
+                # aKc = RinHardMod*E0
+                # rDV = epsD/epsV
+                # aKcc = aKc/(1. + dk2*np.maximum(rDV - dk1, 0.))
 
                 epsEq = epsV + beta * epsD
                 tmp = epsEq + ec
@@ -207,7 +244,7 @@ def stress_fn(eps, epsV, stv, dt, info, params):
                 bound_N = bound_N_tmp
 
                 sigN = np.maximum(bound_N, np.minimum(0., sigN0 + ENc_local * DepsN))                
-           
+
                 # Damage of the Cohesive Component 
                 ssD  = Fdyn * ss
                 tmp2 = csiMax / sqalpha - ssD / ET
@@ -232,7 +269,7 @@ def stress_fn(eps, epsV, stv, dt, info, params):
 
                 return stv
 
-            fracture_flag = (epsN > 0.)
+            fracture_flag = (epsN >= 0.) # >= or >?
             stv = jax.lax.cond(fracture_flag, fracture_response, not_fracture_response, stv)  
 
             ENc = stv[21]
@@ -269,9 +306,9 @@ def stress_fn(eps, epsV, stv, dt, info, params):
     facet_fail_flag = stv[16] > 0.2
     stv = jax.lax.cond(facet_fail_flag, facet_failure, not_facet_failure, stv)
 
+    stv = stv.at[0].set(np.where(facet_fail_flag, 1., 0.))
+
     return stv
-
-
 
 
 def test_cond():
