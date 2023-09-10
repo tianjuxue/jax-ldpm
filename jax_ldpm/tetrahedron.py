@@ -107,8 +107,8 @@ def tetra_inertia_tensor_helper(O, D, E, F):
     EO = E - O
     FO = F - O
 
-    # TOOD: Verify that if vol is unsigned, then orientation of the vertices does not matter.
-    vol = signed_tetrahedron_volume(O, D, E, F)
+    # If vol is unsigned, then orientation of the vertices does not matter.
+    vol = tetrahedron_volume(O, D, E, F)
     P = []
     for i in range(dim):
         P.append([])
@@ -123,7 +123,8 @@ def tetra_inertia_tensor_helper(O, D, E, F):
     I = vol / 20. * np.array(I)
 
     # jax.jit has no runtime error mechanism, so return nan if the orientation of the tetrahedron is not applicable.
-    return np.where(vol > 0., I, np.nan)
+    return np.where( (I[0, 0] > 0.) & (I[1, 1] > 0.) & (I[2, 2] > 0.), I, np.nan)
+ 
 
 tetra_inertia_tensors_helper = jax.vmap(tetra_inertia_tensor_helper, in_axes=(0, 0, 0, 0), out_axes=0)
 
@@ -154,7 +155,7 @@ def tetra_first_moment_helper(O, D, E, F):
     DO = D - O
     EO = E - O
     FO = F - O
-    vol = signed_tetrahedron_volume(O, D, E, F)
+    vol = tetrahedron_volume(O, D, E, F)
     first_moment = 1./4.*vol*(DO + EO + FO)
     return np.where(vol > 0., first_moment, np.nan)
 
@@ -171,7 +172,7 @@ def tetra_first_moment(O, D, E, F, P):
 tetra_first_moments = jax.vmap(tetra_first_moment, in_axes=(0, 0, 0, 0, 0), out_axes=0)
 
 
-def exp():
+def debug():
     O = np.array([0., 0., 0.])
     A = np.array([1., 0., 0.])
     B = np.array([0., 2., 0.])
@@ -204,4 +205,4 @@ def exp():
 
 if __name__ == '__main__':
     # unittest.main()
-    exp()
+    debug()

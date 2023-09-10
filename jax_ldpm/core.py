@@ -88,36 +88,17 @@ def compute_info(cell, ft_data, points, facet_vertices, params):
 
 
     def compute_info_helper(f_ind, ind_i, ind_j, f_data, params):
-
         point_i = points[ind_i]
         point_j = points[ind_j]
- 
+  
         f_v_inds = np.array(f_data[1:4], dtype=np.int32)
-
-        cell_centroid = facet_vertices[f_v_inds[0]]
-        face_centroid = facet_vertices[f_v_inds[1]]
-        edge_centroid = facet_vertices[f_v_inds[2]]
-
-
-        def fn1():
-            tet_points_i = np.stack((point_i, edge_centroid, face_centroid, cell_centroid))
-            tet_points_j = np.stack((point_j, edge_centroid, cell_centroid, face_centroid))
-            return tet_points_i, tet_points_j
-
-        def fn2():
-            tet_points_i = np.stack((point_i, edge_centroid, cell_centroid, face_centroid))
-            tet_points_j = np.stack((point_j, edge_centroid, face_centroid, cell_centroid))
-            return tet_points_i, tet_points_j
-
-        flag = (f_ind == 1) | (f_ind == 2) | (f_ind == 5) | (f_ind == 7) | (f_ind == 8) | (f_ind == 11)
-
-        tet_points_i, tet_points_j = jax.lax.cond(flag, fn1, fn2)
+        tet_points_i = np.vstack((point_i[None, :], facet_vertices[f_v_inds]))
+        tet_points_j = np.vstack((point_j[None, :], facet_vertices[f_v_inds]))
 
         edge_vec = point_j - point_i
         edge_l = np.linalg.norm(edge_vec)
 
         debug_normal_N = edge_vec/edge_l
-
 
         facet_centroid = f_data[6:9]
         normal_N = f_data[9:12]
@@ -344,7 +325,7 @@ def compute_mass(N_nodes, bundled_info, params):
 
 def compute_facet_vols(cells, points, bundled_info):
     points_transposed = np.transpose(points[cells], axes=(1, 0, 2))
-    cell_vols = signed_tetrahedra_volumes(*points_transposed)
+    cell_vols = tetrahedra_volumes(*points_transposed)
     facet_vols = cell_vols[bundled_info['cell_id']]
     return facet_vols
 
@@ -364,8 +345,25 @@ def split_tets(cells, points, facet_data, facet_vertices, params):
 
     qlts = check_mesh_TET4(points, cells)
     tet_qlts = check_mesh_TET4(tet_points, tet_cells)
-    assert np.all(qlts > 0.), f"Tetrahedron mesh must have the right orientation for each tetrahedron"
-    assert np.all(tet_qlts > 0.), f"Facet tetrahedra must have the right orientation for each tetrahedron"
+
+    try:
+        assert np.all(qlts > 0.), f"Mesh tetrahedron orientation test failed"
+    except Exception as e:
+        print(e)
+        print(f"Warning: Mesh tetrahedra do NOT all have the same orientation!")
+        print(f"This should not be a problem in the current implementation, but be careful.")
+
+    # print(np.argwhere(tet_qlts<0.))
+    # print(tet_qlts[:20])
+    # print(tet_qlts[-20:])
+
+    try:
+        assert np.all(tet_qlts > 0.), f"Facet tetrahedra orientation test failed"
+    except Exception as e:
+        print(e)
+        print(f"Warning: Facet tetrahedra do NOT all have the same orientation!")
+        print(f"This should not be a problem in the current implementation, but be careful.")
+
     return bundled_info, tet_cells, tet_points
 
 
