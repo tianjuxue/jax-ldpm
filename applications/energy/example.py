@@ -1,3 +1,6 @@
+"""
+Reminder: Mass lumping will yield slightly worse conservation result.
+"""
 import numpy as onp
 import jax
 import jax.numpy as np
@@ -89,7 +92,7 @@ def save_energy_data(steps, ees, kes):
 
 
 def plot_energy():
-    time_stamp = '1694333567632623'
+    time_stamp = '1694481179782667'
     steps, ees, kes = onp.load(os.path.join(numpy_dir, f'energy_{time_stamp}.npy'))
     plt.plot(steps, ees, linestyle='-', marker='s', markersize=2, linewidth=1, color='red', label='Elastic')
     plt.plot(steps, kes, linestyle='-', marker='s', markersize=2, linewidth=1, color='blue', label='Kinetic')
@@ -174,5 +177,5 @@ def simulation():
 
 
 if __name__ == '__main__':
-    # simulation()
-    plot_energy()
+    simulation()
+    # plot_energy()

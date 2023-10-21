@@ -15,11 +15,10 @@ from jax_ldpm.constitutive import stress_fn, calc_st_sKt
 
 # config.update("jax_enable_x64", True)
 
-
-onp.set_printoptions(threshold=sys.maxsize,
-                     linewidth=1000,
-                     suppress=True,
-                     precision=5)
+# onp.set_printoptions(threshold=sys.maxsize,
+#                      linewidth=1000,
+#                      suppress=True,
+#                      precision=5)
 
 
 def friction_bc(pos, vel, node_reactions):
@@ -70,6 +69,7 @@ def get_A_matrix(x_i, x):
 
 def compute_info(cell, ft_data, points, facet_vertices, params):
 
+    # TODO: very risky
     inds = np.array([[0, 1],
                      [0, 1],
                      [0, 2],
@@ -145,8 +145,6 @@ def compute_info(cell, ft_data, points, facet_vertices, params):
 compute_info_vmap = jax.jit(jax.vmap(compute_info, in_axes=(0, 0, None, None, None)))
 
 
-
-
 def facet_contribution(info, params, pos):
     B_N_i, B_N_j, B_M_i, B_M_j, B_L_i, B_L_j = info['B_mats']
     ind_i = info['ind_i']
@@ -166,6 +164,9 @@ def facet_contribution(info, params, pos):
     eps_L = (B_L_j @ Q_j - B_L_i @ Q_i).squeeze()
     
     eps = np.array([eps_N, eps_M, eps_L])
+
+    epsV /= 3.
+
     stv = stress_fn(eps, epsV, stv, info, params)
 
     info['stv'] = stv
@@ -180,10 +181,13 @@ def facet_contribution(info, params, pos):
     facet_force_i = proj_area*(sigma_N*normal_N + sigma_M*normal_M + sigma_L*normal_L)
     facet_force_j = -facet_force_i
 
-    return ind_i, -F_i, ind_j, -F_j, energy, facet_force_i, facet_force_j, info
+    info['facet_forces_i'] = facet_force_i
+    info['facet_forces_j'] = facet_force_j
+    info['elastic_energy'] = energy
+
+    return ind_i, -F_i, ind_j, -F_j, info
 
 facet_contributions = jax.vmap(facet_contribution, in_axes=(0, None, None))
-
 
 
 def compute_epsV(pos, bundled_info, params):
@@ -199,7 +203,14 @@ def compute_epsV(pos, bundled_info, params):
 @jax.jit
 def compute_node_forces(node_var, bundled_info, params):
     pos = node_var[:, :6]
-    inds_i, _, inds_j, _, _, facet_forces_i, facet_forces_j, _ = facet_contributions(bundled_info, params, pos)
+
+    # TODO: why should we call facet_contributions again?
+    # If there is a bug, recover the following line and investigate why.
+    # inds_i, _, inds_j, _, _, = facet_contributions(bundled_info, params, pos)
+    inds_i, inds_j = bundled_info['ind_i'], bundled_info['ind_j']
+
+
+    facet_forces_i, facet_forces_j = bundled_info['facet_forces_i'], bundled_info['facet_forces_j'], 
     inds = np.hstack((inds_i, inds_j))
     facet_forces = np.vstack((facet_forces_i, facet_forces_j))
     node_forces = np.zeros((len(pos), 3))
@@ -210,8 +221,8 @@ def compute_node_forces(node_var, bundled_info, params):
 @jax.jit
 def compute_elastic_energy(node_var, bundled_info, params):
     pos = node_var[:, :6]
-    _, _, _, _, energy, _, _, _ = facet_contributions(bundled_info, params, pos)
-    return np.sum(energy)
+    elastic_energy = bundled_info['elastic_energy']
+    return np.sum(elastic_energy)
 
 
 @jax.jit
@@ -229,7 +240,7 @@ def compute_kinetic_energy(node_var, true_ms):
 def rhs_func(pos, vel, bundled_info, mass, params, friction_bc):
     bundled_info = compute_epsV(pos, bundled_info, params)
 
-    inds_i, forces_i, inds_j, forces_j, _, _, _, bundled_info = facet_contributions(bundled_info, params, pos)
+    inds_i, forces_i, inds_j, forces_j, bundled_info = facet_contributions(bundled_info, params, pos)
 
     inds = np.hstack((inds_i, inds_j))
     reactions = np.vstack((forces_i, forces_j))
@@ -315,7 +326,6 @@ def compute_mass(N_nodes, bundled_info, params):
     node_lumped_ms = np.zeros((N_nodes, 6))
     node_lumped_ms = node_lumped_ms.at[inds].add(lumped_ms)
 
-    # rho = 1e3
     rho = params['rho']
     node_true_ms *= rho
     node_lumped_ms *= rho
@@ -331,7 +341,6 @@ def compute_facet_vols(cells, points, bundled_info):
 
 
 def split_tets(cells, points, facet_data, facet_vertices, params):
-    # bundled_info = compute_info_vmap(cells, np.arange(len(cells)), points, params)
 
     bundled_info = compute_info_vmap(cells, facet_data, points, facet_vertices, params)
 
@@ -341,7 +350,8 @@ def split_tets(cells, points, facet_data, facet_vertices, params):
     tet_cells = np.arange(len(tet_points)).reshape(-1, 4)
 
     bundled_info['facet_vols_initial'] = compute_facet_vols(cells, points, bundled_info)
-    bundled_info['stv'] = np.zeros((len(bundled_info['facet_vols_initial']), 22))
+    num_facets = len(bundled_info['facet_vols_initial'])
+    bundled_info['stv'] = np.zeros((num_facets, 22))
 
     qlts = check_mesh_TET4(points, cells)
     tet_qlts = check_mesh_TET4(tet_points, tet_cells)

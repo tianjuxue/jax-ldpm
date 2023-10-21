@@ -230,6 +230,7 @@ def stress_fn(eps, epsV, stv, info, params):
                 phiD = np.where(tmp >= 0., 1. / (1. + tmp), phiD)
                 aKcc =  (aKc - aKc1) * phiD + aKc1
 
+                # Not consistent with implementation above
                 # aKc = RinHardMod*E0
                 # rDV = epsD/epsV
                 # aKcc = aKc/(1. + dk2*np.maximum(rDV - dk1, 0.))
@@ -239,8 +240,8 @@ def stress_fn(eps, epsV, stv, info, params):
                 tmp1 = epsEq + ec0
 
                 sc0 = sc + aKcc * (ec0 - ec)
-                bound_N_tmp = np.where((tmp < 0.) & (tmp1 > 0.), -sc + aKcc*tmp, np.where(tmp1 < 0.,  -sc0 * np.exp(-aKcc*tmp1/sc0), -sc))
-                
+                bound_N_tmp = np.where((tmp <= 0.) & (tmp1 >= 0.), -sc + aKcc*tmp, np.where(tmp1 <= 0.,  -sc0 * np.exp(-aKcc*tmp1/sc0), -sc))
+
                 bound_N = bound_N_tmp
 
                 sigN = np.maximum(bound_N, np.minimum(0., sigN0 + ENc_local * DepsN))                

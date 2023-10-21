@@ -151,11 +151,11 @@ def simulation():
     for i in range(len(ts[1:])):
         print(f"Step {i + 1}")
 
-        state, bundled_info = leapfrog(state, rhs_func, bundled_info, node_true_ms, params)
-
         crt_t = ts[i + 1]
         inds_node, inds_var, bc_vals = crt_bc(i, *bc_args)
         state = apply_bc(state, inds_node, inds_var, bc_vals)
+
+        state, bundled_info = leapfrog(state, rhs_func, bundled_info, node_true_ms, params)
 
         if (i + 1) % 50 == 0:
             save_sol_helper(i + 1, tet_points, tet_cells, points, bundled_info, state)
