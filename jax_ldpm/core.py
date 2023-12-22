@@ -68,6 +68,7 @@ def get_A_matrix(x_i, x):
 
 
 def compute_info(cell, ft_data, points, facet_vertices, params):
+    # TODO: some comments highly needed
 
     # TODO: very risky
     inds = np.array([[0, 1],
@@ -119,6 +120,8 @@ def compute_info(cell, ft_data, points, facet_vertices, params):
         B_L_j = 1./edge_l * normal_L[None, :] @ A_j
 
         st, aKt = calc_st_sKt(params, edge_l)
+
+        jax.debug.print('edge_l = {edge_l}', edge_l=edge_l)
 
         bundled_info = {'tet_points_i': tet_points_i,
                         'tet_points_j': tet_points_j,
@@ -181,8 +184,11 @@ def facet_contribution(info, params, pos):
     facet_force_i = proj_area*(sigma_N*normal_N + sigma_M*normal_M + sigma_L*normal_L)
     facet_force_j = -facet_force_i
 
-    info['facet_forces_i'] = facet_force_i
-    info['facet_forces_j'] = facet_force_j
+    # info['facet_forces_i'] = facet_force_i
+    # info['facet_forces_j'] = facet_force_j
+
+    info['F_i'] = -F_i
+    info['F_j'] = -F_j
     info['elastic_energy'] = energy
 
     return ind_i, -F_i, ind_j, -F_j, info
@@ -201,21 +207,33 @@ def compute_epsV(pos, bundled_info, params):
 
 
 @jax.jit
-def compute_node_forces(node_var, bundled_info, params):
+def compute_node_reactions(node_var, bundled_info, params):
     pos = node_var[:, :6]
-
-    # TODO: why should we call facet_contributions again?
-    # If there is a bug, recover the following line and investigate why.
-    # inds_i, _, inds_j, _, _, = facet_contributions(bundled_info, params, pos)
     inds_i, inds_j = bundled_info['ind_i'], bundled_info['ind_j']
-
-
-    facet_forces_i, facet_forces_j = bundled_info['facet_forces_i'], bundled_info['facet_forces_j'], 
+    F_i, F_j = bundled_info['F_i'], bundled_info['F_j'], 
     inds = np.hstack((inds_i, inds_j))
-    facet_forces = np.vstack((facet_forces_i, facet_forces_j))
-    node_forces = np.zeros((len(pos), 3))
-    node_forces = node_forces.at[inds].add(facet_forces)
-    return node_forces
+    facet_forces = np.vstack((F_i, F_j))
+    node_reactions = np.zeros((len(pos), 6))
+    node_reactions = node_reactions.at[inds].add(facet_forces)
+    return node_reactions
+
+
+# @jax.jit
+# def compute_node_forces(node_var, bundled_info, params):
+#     """Deprecated
+#     """
+#     pos = node_var[:, :6]
+#     # TODO: why should we call facet_contributions again?
+#     # If there is a bug, recover the following line and investigate why.
+#     # inds_i, _, inds_j, _, _, = facet_contributions(bundled_info, params, pos)
+#     inds_i, inds_j = bundled_info['ind_i'], bundled_info['ind_j']
+
+#     facet_forces_i, facet_forces_j = bundled_info['facet_forces_i'], bundled_info['facet_forces_j'], 
+#     inds = np.hstack((inds_i, inds_j))
+#     facet_forces = np.vstack((facet_forces_i, facet_forces_j))
+#     node_forces = np.zeros((len(pos), 3))
+#     node_forces = node_forces.at[inds].add(facet_forces)
+#     return node_forces
 
 
 @jax.jit
@@ -341,9 +359,30 @@ def compute_facet_vols(cells, points, bundled_info):
 
 
 def split_tets(cells, points, facet_data, facet_vertices, params):
+    """Compute useful facet information
+
+    Parameters
+    ----------
+    cells : onp.ndarray
+        (num_cells, 4)
+    points : onp.ndarray
+        (num_points, 3)
+    facet_data : onp.ndarray
+        (num_cells, 12, 19)
+    facet_vertices : onp.ndarray
+        (num_facets*3, 3)
+    params : dict
+
+    Returns
+    -------
+    bundled_info : dict
+    tet_cells : jax.Array
+        (num_tet_cells, 4)
+    tet_points : jax.Array
+        (num_tet_points, 3)
+    """
 
     bundled_info = compute_info_vmap(cells, facet_data, points, facet_vertices, params)
-
     bundled_info = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:]), bundled_info)
     tet_points = np.vstack((bundled_info['tet_points_i'].reshape(-1, 3), 
                             bundled_info['tet_points_j'].reshape(-1, 3)))

@@ -166,7 +166,10 @@ def stress_fn(eps, epsV, stv, info, params):
             Dcsi = csi - csiO
 
             # Coupling Variable
-            teta = np.arctan(epsN/(epsT * sqalpha + 1e-10))
+            tmp = epsT * sqalpha 
+
+            teta = np.where(epsN == 0., 0., np.where(tmp != 0., np.arctan(epsN/tmp), 
+                np.where(epsN > 0., np.pi/2., -np.pi/2.)))
             ateta = teta*2./np.pi
 
             # effective old stress
@@ -188,17 +191,19 @@ def stress_fn(eps, epsV, stv, info, params):
                 cteta2 = cteta * cteta
 
                 # checkify.check(st >= 1e-10, f'Warning: st = {st} in critical range; continuation may produce numerical issues.')
-
                 rat = ss / sqalpha / st
                 rat2 = rat*rat 
+
+                # 1e-3 seems to work better than 1e-15, but 1e-15 is used in Abaqus Fortran code
                 EPS = 1e-3
+                # EPS = 1e-15
                 s0 = np.where(cteta > EPS, st*(-steta + np.sqrt(np.abs(steta2 + 4.*cteta2/rat2))) / (2.*cteta2/rat2), st)
 
                 ep0 = s0 / E0
                 # checkify.check((ateta >= 0.) | (sen_c >= 1.), 'Warning: ateta and sec_c in ranges to produce exponent failure')
-
                 H = Hs / alpha + (aKt - Hs / alpha) * ateta**sen_c
-                tmp = csiMax - Fdyn * ep0       
+                tmp = csiMax - Fdyn * ep0 
+
                 bound_f_tmp = np.where(tmp < 0., Fdyn * s0, Fdyn * s0 * np.exp(-H * tmp / s0))
                 tmp1 = unkt * (csiMax - bound_f_tmp / E0)
                 bound_f = np.where(csi > tmp1, bound_f_tmp, 0.)
@@ -244,8 +249,8 @@ def stress_fn(eps, epsV, stv, info, params):
 
                 bound_N = bound_N_tmp
 
-                sigN = np.maximum(bound_N, np.minimum(0., sigN0 + ENc_local * DepsN))                
-
+                sigN = np.maximum(bound_N, np.minimum(0., sigN0 + ENc_local * DepsN))
+       
                 # Damage of the Cohesive Component 
                 ssD  = Fdyn * ss
                 tmp2 = csiMax / sqalpha - ssD / ET
@@ -270,7 +275,9 @@ def stress_fn(eps, epsV, stv, info, params):
 
                 return stv
 
-            fracture_flag = (epsN >= 0.) # >= or >?
+            # fracture_flag = (epsN >= 0.) # >= or >?
+            fracture_flag = (epsN > 0.) # >= or >? Fortran code uses >
+
             stv = jax.lax.cond(fracture_flag, fracture_response, not_fracture_response, stv)  
 
             ENc = stv[21]
