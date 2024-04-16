@@ -275,7 +275,7 @@ def stress_fn(eps, epsV, stv, info, params):
 
                 return stv
 
-            # fracture_flag = (epsN >= 0.) # >= or >?
+            # fracture_flag = (epsN >= 0.)
             fracture_flag = (epsN > 0.) # >= or >? Fortran code uses >
 
             stv = jax.lax.cond(fracture_flag, fracture_response, not_fracture_response, stv)  

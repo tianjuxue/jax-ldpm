@@ -123,7 +123,7 @@ def tetra_inertia_tensor_helper(O, D, E, F):
     I = vol / 20. * np.array(I)
 
     # jax.jit has no runtime error mechanism, so return nan if the orientation of the tetrahedron is not applicable.
-    return np.where( (I[0, 0] > 0.) & (I[1, 1] > 0.) & (I[2, 2] > 0.), I, np.nan)
+    return np.where((I[0, 0] > 0.) & (I[1, 1] > 0.) & (I[2, 2] > 0.), I, np.nan)
  
 
 tetra_inertia_tensors_helper = jax.vmap(tetra_inertia_tensor_helper, in_axes=(0, 0, 0, 0), out_axes=0)

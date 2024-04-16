@@ -1,8 +1,15 @@
-# jax-ldpm
+# JAX-LDPM
 
 JAX implementation of the Lattice Discrete Particle Model (LDPM) for quasi-brittle materials.
 
-### TODO
+**Quick example**: You can check `benchmarks/` or `examples/`for a variety of cases. For example, run
 
-1. Better damping scheme
-2. Facet data pre-processing
+```bash
+python -m examples.elasticity.example
+```
+
+From home directory  `jax-ldpm/`
+
+### Contact
+
+[Tianju Xue, HKUST](https://ce.hkust.edu.hk/people/tian-ju-xue-xuetianju)

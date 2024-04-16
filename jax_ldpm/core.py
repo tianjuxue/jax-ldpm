@@ -9,11 +9,8 @@ import glob
 import sys
 from functools import partial
 
-from jax_ldpm.tetrahedron import tetrahedra_volumes, tetra_first_moments_helper, tetra_inertia_tensors_helper, signed_tetrahedra_volumes
+from jax_ldpm.tetrahedron import tetrahedra_volumes, tetra_first_moments_helper, tetra_inertia_tensors_helper
 from jax_ldpm.constitutive import stress_fn, calc_st_sKt
-
-
-# config.update("jax_enable_x64", True)
 
 # onp.set_printoptions(threshold=sys.maxsize,
 #                      linewidth=1000,
@@ -26,14 +23,15 @@ def friction_bc(pos, vel, node_reactions):
     return friciton_force
 
 
-@partial(jax.jit, static_argnums=(1, 5))
-def leapfrog(node_var, rhs_func, bundled_info, node_true_ms, params, friction_bc=friction_bc):
+
+@partial(jax.jit, static_argnums=(1, 6))
+def leapfrog(node_var, rhs_func, bundled_info, node_true_ms, params, applied_reactions=0., friction_bc=friction_bc):
     pos = node_var[:, :6] # Step n
     vel = node_var[:, 6:] # Step n - 1/2
     # facet_var updated through bundled_info
     # Input facet_var: Step n - 1
     # Output facet_var: Step n
-    vel_rhs, bundled_info = rhs_func(pos, vel, bundled_info, node_true_ms, params, friction_bc)
+    vel_rhs, bundled_info = rhs_func(pos, vel, bundled_info, node_true_ms, params, applied_reactions, friction_bc)
     vel += params['dt']*vel_rhs # Step n + 1/2
     pos += params['dt']*vel # Step n + 1
     node_var = np.hstack((pos, vel))
@@ -121,7 +119,7 @@ def compute_info(cell, ft_data, points, facet_vertices, params):
 
         st, aKt = calc_st_sKt(params, edge_l)
 
-        jax.debug.print('edge_l = {edge_l}', edge_l=edge_l)
+        # jax.debug.print('edge_l = {edge_l}', edge_l=edge_l)
 
         bundled_info = {'tet_points_i': tet_points_i,
                         'tet_points_j': tet_points_j,
@@ -181,12 +179,6 @@ def facet_contribution(info, params, pos):
 
     energy = 1./2.*edge_l*proj_area*np.sum(sigma*eps)
 
-    facet_force_i = proj_area*(sigma_N*normal_N + sigma_M*normal_M + sigma_L*normal_L)
-    facet_force_j = -facet_force_i
-
-    # info['facet_forces_i'] = facet_force_i
-    # info['facet_forces_j'] = facet_force_j
-
     info['F_i'] = -F_i
     info['F_j'] = -F_j
     info['elastic_energy'] = energy
@@ -208,32 +200,15 @@ def compute_epsV(pos, bundled_info, params):
 
 @jax.jit
 def compute_node_reactions(node_var, bundled_info, params):
+    # TODO: pos should not be passed since it's actually not used
     pos = node_var[:, :6]
     inds_i, inds_j = bundled_info['ind_i'], bundled_info['ind_j']
-    F_i, F_j = bundled_info['F_i'], bundled_info['F_j'], 
+    F_i, F_j = bundled_info['F_i'], bundled_info['F_j']
     inds = np.hstack((inds_i, inds_j))
     facet_forces = np.vstack((F_i, F_j))
     node_reactions = np.zeros((len(pos), 6))
     node_reactions = node_reactions.at[inds].add(facet_forces)
     return node_reactions
-
-
-# @jax.jit
-# def compute_node_forces(node_var, bundled_info, params):
-#     """Deprecated
-#     """
-#     pos = node_var[:, :6]
-#     # TODO: why should we call facet_contributions again?
-#     # If there is a bug, recover the following line and investigate why.
-#     # inds_i, _, inds_j, _, _, = facet_contributions(bundled_info, params, pos)
-#     inds_i, inds_j = bundled_info['ind_i'], bundled_info['ind_j']
-
-#     facet_forces_i, facet_forces_j = bundled_info['facet_forces_i'], bundled_info['facet_forces_j'], 
-#     inds = np.hstack((inds_i, inds_j))
-#     facet_forces = np.vstack((facet_forces_i, facet_forces_j))
-#     node_forces = np.zeros((len(pos), 3))
-#     node_forces = node_forces.at[inds].add(facet_forces)
-#     return node_forces
 
 
 @jax.jit
@@ -244,18 +219,18 @@ def compute_elastic_energy(node_var, bundled_info, params):
 
 
 @jax.jit
-def compute_kinetic_energy(node_var, true_ms):
+def compute_kinetic_energy(node_var, ms):
     vel = node_var[:, 6:]
     def node_ke(node_vel, node_mass):
         ke = 0.5*node_vel[None, :] @ node_mass @ node_vel[:, None]
         return ke.squeeze()
 
-    energy = jax.vmap(node_ke)(vel, true_ms)
+    energy = jax.vmap(node_ke)(vel, ms)
     return np.sum(energy)
 
 
-
-def rhs_func(pos, vel, bundled_info, mass, params, friction_bc):
+def rhs_func(pos, vel, bundled_info, mass, params, applied_reactions, friction_bc):
+    # This is terrible - to change. RHS computation should be coherent.
     bundled_info = compute_epsV(pos, bundled_info, params)
 
     inds_i, forces_i, inds_j, forces_j, bundled_info = facet_contributions(bundled_info, params, pos)
@@ -269,21 +244,20 @@ def rhs_func(pos, vel, bundled_info, mass, params, friction_bc):
 
     node_reactions = node_reactions.at[:, :2].add(friciton_force)
 
+    node_reactions += applied_reactions
+
     def de_mass(node_pos, node_mass):
-        # return np.linalg.solve(node_mass, node_pos) # Seems not good for friction force
-        return node_pos/np.diag(node_mass)
-        # return node_pos/np.sum(node_mass, axis=-1) # Not tested
+        # return np.linalg.solve(node_mass, node_pos) # No mass lumping
+        return node_pos/np.diag(node_mass) # Mass lumping 1
+        # return node_pos/np.sum(node_mass, axis=-1) # Mass lumping 2
 
     vel_rhs = jax.vmap(de_mass)(node_reactions, mass)
 
     damping_v = params['damping_v']
     damping_w = params['damping_w']
-
     damping_rhs = -np.hstack((damping_v*vel[:, :3], damping_w*vel[:, 3:])) 
 
     vel_rhs += damping_rhs
-
-    # rhs_vals /= mass
 
     return vel_rhs, bundled_info
 
@@ -309,7 +283,8 @@ def compute_mass(N_nodes, bundled_info, params):
 
     def lumped_mass(vol, fm, inertia):
         M = true_mass(vol, fm, inertia)
-        return np.sum(M, axis=1)
+        # return np.sum(M, axis=1) # Mass lumping 1
+        return np.diag(M) # Mass lumping 2
 
     def mass_helper(tet_points):
         Os, Ds, Es, Fs = np.transpose(tet_points, axes=(1, 0, 2))
