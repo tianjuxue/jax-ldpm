@@ -16,10 +16,6 @@ from jax_fem.utils import save_sol
 from benchmarks.three_point_bending.fem_models import LinearElasticityMass, LinearElasticity
 
 
-# from jax.config import config
-# config.update("jax_enable_x64", True)
-
-
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 

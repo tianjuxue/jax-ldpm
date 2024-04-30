@@ -20,9 +20,6 @@ from benchmarks.three_point_bending.fem_problems import create_fe_problems, expl
 from benchmarks.three_point_bending.interpolation import mutual_force
 
 
-# from jax.config import config
-# config.update("jax_enable_x64", True)
-
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 

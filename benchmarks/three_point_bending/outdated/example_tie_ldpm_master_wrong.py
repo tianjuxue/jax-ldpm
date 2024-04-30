@@ -20,9 +20,6 @@ from benchmarks.three_point_bending.fem_problems import create_fe_problems, expl
 from benchmarks.three_point_bending.interpolation import ldpm_to_fem, fem_to_ldpm, fem_to_ldpm_debug_mass
 
 
-# from jax.config import config
-# config.update("jax_enable_x64", True)
-
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 

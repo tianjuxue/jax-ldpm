@@ -2,8 +2,6 @@ import numpy as onp
 import jax
 import jax.numpy as np
 import jax.tree_util
-from jax.config import config
-
 import os
 import glob
 import sys
