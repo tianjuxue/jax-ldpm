@@ -20,8 +20,9 @@ from benchmarks.three_point_bending.fem_problems import create_fe_problems, get_
 from benchmarks.three_point_bending.interpolation import ldpm_to_fem_mass,ldpm_to_fem_force, fem_to_ldpm_disp, get_transformation_matrix
 
 
-from jax import config
-config.update("jax_enable_x64", False)
+# from jax import config
+# config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", False)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -377,7 +378,7 @@ def simulation():
 
     disps = np.array(disps)
     forces = np.array(forces)
-    print(f"disps and forces: \n{np.stack((disps, forces)).T}")
+    print(f"times and forces: \n{np.stack((disps, forces)).T}")
     print(f"Timing: total simulation run for {time.time() - start_time} s")
 
     post_analysis_data = np.array([ts_save, bc_z_vals, P_top, R_support, CMOD, v1, v2, W_ext, W_int, E_kin]).T

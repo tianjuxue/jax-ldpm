@@ -14,7 +14,8 @@ from jax_ldpm.utils import json_parse
 from jax_ldpm.generate_mesh import box_mesh, save_sol
 from jax_ldpm.core import *
 
-config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", False)
+# config.update("jax_enable_x64", True)
 
 # Latex style plot
 plt.rcParams.update({

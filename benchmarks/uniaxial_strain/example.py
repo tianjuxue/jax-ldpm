@@ -10,7 +10,8 @@ from jax_ldpm.utils import json_parse
 from jax_ldpm.generate_mesh import box_mesh, save_sol
 from jax_ldpm.core import *
 
-config.update("jax_enable_x64", False)
+# config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", False)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
@@ -201,7 +202,7 @@ def simulation():
 
     ts_save = np.array(ts_save)
     P_top = np.array(P_top)
-    print(f"disps and forces: \n{np.stack((ts_save, P_top)).T}")
+    print(f"times and forces: \n{np.stack((ts_save, P_top)).T}")
     print(f"Timing: total simulation run for {time.time() - start_time} s")
 
     post_analysis_data = np.array([ts_save, bc_z_vals, P_top, R_support, W_ext, W_int, E_kin, sigma, eps]).T
