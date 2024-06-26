@@ -378,7 +378,7 @@ def simulation():
 
     disps = np.array(disps)
     forces = np.array(forces)
-    print(f"times and forces: \n{np.stack((disps, forces)).T}")
+    print(f"disps and forces: \n{np.stack((disps, forces)).T}")
     print(f"Timing: total simulation run for {time.time() - start_time} s")
 
     post_analysis_data = np.array([ts_save, bc_z_vals, P_top, R_support, CMOD, v1, v2, W_ext, W_int, E_kin]).T
