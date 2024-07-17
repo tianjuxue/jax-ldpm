@@ -10,7 +10,6 @@ from jax_ldpm.utils import json_parse
 from jax_ldpm.generate_mesh import box_mesh, save_sol
 from jax_ldpm.core import *
 
-# config.update("jax_enable_x64", False)
 jax.config.update("jax_enable_x64", False)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
@@ -39,7 +38,7 @@ acc = vel/time_to_vel
 dt = 1e-7
 
 
-def bc_disp_control_fixed(top_inds_node, bottom_inds_node):
+def bc_disp_control_fixed(bottom_inds_node, top_inds_node):
     def pre_compute_bc():
         N_btm_ind = len(bottom_inds_node)
         N_tp_ind = len(top_inds_node)
@@ -72,24 +71,29 @@ def bc_disp_control_fixed(top_inds_node, bottom_inds_node):
     return pre_compute_bc, crt_bc
 
 
-def bc_disp_control_free(top_inds_node, bottom_inds_node):
+def bc_disp_control_free(bottom_inds_node, top_inds_node, bottom_inds_RP, top_inds_RP):
     def pre_compute_bc():
         N_btm_ind = len(bottom_inds_node)
         N_tp_ind = len(top_inds_node)
+        N_btm_RP = len(bottom_inds_RP)
+        N_tp_RP = len(top_inds_RP)
 
         bottom_inds_tiled = np.tile(bottom_inds_node, 6)
         top_inds_tiled = np.tile(top_inds_node, 6) 
-        inds_node = np.hstack((bottom_inds_tiled, top_inds_tiled))
+        bottom_RP_tiled = np.tile(bottom_inds_RP, 12)
+        top_RP_tiled = np.tile(top_inds_RP, 12)
+        inds_node = np.hstack((bottom_inds_tiled, top_inds_tiled, bottom_RP_tiled, top_RP_tiled))
 
         bottom_inds_var = np.repeat(np.array([2, 3, 4, 8, 9, 10]), N_btm_ind)
         top_inds_var = np.repeat(np.array([2, 3, 4, 8, 9, 10]), N_tp_ind)
-        inds_var = np.hstack((bottom_inds_var, top_inds_var))
+        bottom_RP_var = np.repeat(np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]), N_btm_RP)
+        top_RP_var = np.repeat(np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]), N_tp_RP)
+        inds_var = np.hstack((bottom_inds_var, top_inds_var, bottom_RP_var, top_RP_var))
 
-        return N_btm_ind, N_tp_ind, inds_node, inds_var
+        return N_btm_ind, N_tp_ind, N_btm_RP, N_tp_RP, inds_node, inds_var
 
-    @partial(jax.jit, static_argnums=(1, 2))
-    def crt_bc(step, N_btm_ind, N_tp_ind, inds_node, inds_var):
-     
+    @partial(jax.jit, static_argnums=(1, 2, 3, 4))
+    def crt_bc(step, N_btm_ind, N_tp_ind, N_btm_RP, N_tp_RP, inds_node, inds_var):
         crt_time = step*dt
         z1 = 1./2.*acc*crt_time**2
         z2 = 1./2.*acc*time_to_vel**2 + vel*(crt_time - time_to_vel)
@@ -99,8 +103,10 @@ def bc_disp_control_free(top_inds_node, bottom_inds_node):
         bottom_vals = np.zeros(N_btm_ind*6)
         top_vals = np.hstack((bc_z_val*np.ones(N_tp_ind), np.zeros(N_tp_ind*2), \
                               bc_z_vel*np.ones(N_tp_ind), np.zeros(N_tp_ind*2)))
-
-        bc_vals = np.hstack((bottom_vals, top_vals))
+        bottom_RP_vals = np.zeros(N_btm_RP*12)
+        top_RP_vals = np.hstack((np.zeros(N_tp_RP*2), bc_z_val*np.ones(N_tp_RP), np.zeros(N_tp_RP*3), \
+                                 np.zeros(N_tp_RP*2), bc_z_vel*np.ones(N_tp_RP), np.zeros(N_tp_RP*3)))
+        bc_vals = np.hstack((bottom_vals, top_vals, bottom_RP_vals, top_RP_vals))
         return inds_node, inds_var, bc_vals, bc_z_val, bc_z_vel
 
     return pre_compute_bc, crt_bc
@@ -136,10 +142,15 @@ def simulation():
 
     bottom_inds_node = np.argwhere(points[:, 2] < 1e-5).reshape(-1)
     top_inds_node = np.argwhere(points[:, 2] > Lz - 1e-5).reshape(-1)
+    bottom_inds_RP = np.argwhere( (points[:, 2] < 1e-5) & \
+                                  (np.abs(points[:, 0] - 50.) < 1e-5) & \
+                                  (np.abs(points[:, 1] - 50.) < 1e-5) ).reshape(-1)
+    top_inds_RP = np.argwhere( (points[:, 2] > Lz - 1e-5) & \
+                               (np.abs(points[:, 0] - 50.) < 1e-5) & \
+                               (np.abs(points[:, 1] - 50.) < 1e-5) ).reshape(-1)
 
     params['cells'] = cells
     params['points'] = points
-
     N_nodes = len(points)
     print(f"Num of nodes = {N_nodes}")
     vtk_path = os.path.join(vtk_dir, f'mesh.vtu')
@@ -149,11 +160,13 @@ def simulation():
     node_true_ms, node_lumped_ms = compute_mass(N_nodes, bundled_info, params)
     state = np.zeros((len(points), 12))
 
-    pre_compute_bc, crt_bc = bc_disp_control_fixed(top_inds_node, bottom_inds_node)
+    # pre_compute_bc, crt_bc = bc_disp_control_fixed(bottom_inds_node, top_inds_node)
+    pre_compute_bc, crt_bc = bc_disp_control_free(bottom_inds_node, top_inds_node, bottom_inds_RP, top_inds_RP)
+
     bc_args = pre_compute_bc()
 
-    ts = np.arange(0., dt*4000001, dt)
-    # ts = np.arange(0., dt*20001, dt)
+    # Fixed: 40000000; Free: 2000000
+    ts = np.arange(0., dt*2000001, dt)
 
     save_sol_helper(0, tet_points, tet_cells, points, bundled_info, state)
 
