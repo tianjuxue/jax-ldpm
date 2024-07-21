@@ -40,42 +40,10 @@ def calc_st_sKt(params, aLength):
     return st, aKt
 
 
-
 def stress_fn(eps, epsV, stv, info, params):
-    # Variables omitted:
-    # nprops, props, rbv, RateEffectFlag
-
-    # LDPM MATERIAL MODEL
-    #  
-    # LDPM Facet Constitutive Law - Cusatis/Rezakhani Oct 2019
-    # Copied from Fortran code and transformed to Python code by Tianju Aug 2023
-    #
-    # stv state variable
-    # stv[1]  Normal N stress
-    # stv[2]  Shear M stress
-    # stv[3]  Shear L stress
-    # stv[4]  Normal N strain
-    # stv[5]  Shear M strain
-    # stv[6]  Shear L strain
-    # stv[7]  Max normal N strain
-    # stv[8]  Max shear T strain
-    # stv[9]  Tensile strength                             # Useless
-    # stv[10] Post-peak slope in tension                   # Useless
-    # stv[11] Shear L crack opening
-    # stv[12] Minimum Normal Strain                        # Not used?
-    # stv[13] Normal N crack opening
-    # stv[14] Shear M crack opening
-    # stv[15] Total crack opening
-    # stv[16] Volumetric Strain
-    # stv[17] Dissipated energy density rate
-    # stv[18] Dissipated energy density
-    # stv[19] Dissipated energy density rate in tension
-    # stv[20] Dissipated energy density in tension
-    # stv[21] ENc                                          # Created by Tianju, for local use
-
     dns           = params['rho']           # Density
-    E0            = params['E0']            # Young Modulus # GC: This should be EN=E0
-    alpha         = params['alpha']         # Poisson ratio # GC: This should be alpha
+    E0            = params['E0']            # Young Modulus
+    alpha         = params['alpha']         # Poisson ratio
     ft            = params['ft']            # Tensile Strength
     # chLen         = Props(5)                # Tensile characteristic length
     fr            = params['fr']            # Shear strength ratio
