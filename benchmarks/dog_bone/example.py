@@ -11,8 +11,7 @@ from jax_ldpm.generate_mesh import box_mesh, save_sol
 from jax_ldpm.core import *
 
 jax.config.update("jax_enable_x64", False)
-# JAX_ENABLE_X64 = True
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 onp.set_printoptions(threshold=sys.maxsize,
                      linewidth=1000,
@@ -37,6 +36,12 @@ time_to_vel = 0.001
 acc = vel/time_to_vel
 dt = 1e-7
 
+case1 = {'Area': 50*50,
+         'name': '000'}
+case2 = {'Area': 50*74,
+         'name': '001'}
+# Case1 refers to 8-16 mm mesh
+# Case2 refers to 6-12 mm mesh
 
 def bc_disp_control(top_inds_node, bottom_inds_node):
     def pre_compute_bc():
@@ -79,7 +84,9 @@ def save_sol_helper(step, tet_points, tet_cells, points, bundled_info, state):
     save_sol(tet_points, tet_cells, vtk_path, point_infos=[('u', tets_u)], cell_infos=[('stv', stv), ('v', v)])
 
 
-def simulation():
+def simulation(case):
+    Area = case['Area']
+    model_indx = case['name']
     files = glob.glob(os.path.join(vtk_dir, f'*'))
     for f in files:
         os.remove(f)
@@ -88,19 +95,15 @@ def simulation():
     params = json_parse(json_file)
     params['dt'] = dt
 
-    facet_data = onp.genfromtxt(os.path.join(freecad_dir, 'LDPMgeo000-data-facets.dat'), dtype=float)
-    facet_vertices = onp.genfromtxt(os.path.join(freecad_dir, 'LDPMgeo000-data-facetsVertices.dat'), dtype=float)
-    meshio_mesh = meshio.read(os.path.join(freecad_dir, 'LDPMgeo000-para-mesh.000.vtk'))
+    facet_data = onp.genfromtxt(os.path.join(freecad_dir, f'LDPMgeo{model_indx}-data-facets.dat'), dtype=float)
+    facet_vertices = onp.genfromtxt(os.path.join(freecad_dir, f'LDPMgeo{model_indx}-data-facetsVertices.dat'), dtype=float)
+    meshio_mesh = meshio.read(os.path.join(freecad_dir, f'LDPMgeo{model_indx}-para-mesh.000.vtk'))
     cell_type = 'tetra'
     points, cells = onp.array(meshio_mesh.points), np.array(meshio_mesh.cells_dict[cell_type])
 
     Lx = np.max(points[:, 0])
     Ly = np.max(points[:, 1])
     Lz = np.max(points[:, 2])
-    
-    # Area = np.pi * 150 * 50 - 2 * 100 * 50
-    # TODO: Change the expression of area
-    Area = 50 * 50
 
     bottom_inds_node = np.argwhere(points[:, 2] < 1e-5).reshape(-1)
     top_inds_node = np.argwhere(points[:, 2] > Lz - 1e-5).reshape(-1)
@@ -121,8 +124,6 @@ def simulation():
     bc_args = pre_compute_bc()
 
     ts = np.arange(0., dt*1000001, dt)
-    # ts = np.arange(0., dt*2000001, dt)
-    # ts = np.arange(0., dt*20001, dt)
 
     save_sol_helper(0, tet_points, tet_cells, points, bundled_info, state)
 
@@ -162,15 +163,12 @@ def simulation():
 
     start_time = time.time()
     for i in range(len(ts[1:])):
-    # for i in range(3):
         if (i + 1) % 1000 == 0:
             print(f"\nStep {i + 1} in {len(ts[1:])}, t = {ts[i + 1]}, disp = {bc_z_val}, acceleration needs {time_to_vel/dt} step")
-        # print(f'Step {i + 1}')
         crt_t = ts[i + 1]
         inds_node, inds_var, bc_vals, bc_z_val, bc_z_vel = crt_bc(i + 1, *bc_args)
         state = apply_bc(state, inds_node, inds_var, bc_vals)
-        
-        # print(f"state = {state.dtype}")
+
 
         dW_ext, dW_int, E_k = energy_and_work(state, ldpm_node_reactions, bc_z_vel)
         W_external.append(W_external[-1] + dW_ext)
@@ -191,7 +189,7 @@ def simulation():
             P_top.append(-P)
             R_support.append(R)
 
-            W_ext.append(W_external[-1])
+            W_ext.append(-W_external[-1])
             W_int.append(-W_internal[-1])
             E_kin.append(E_k)
 
@@ -209,9 +207,9 @@ def simulation():
     post_analysis_data = np.array([ts_save, bc_z_vals, P_top, R_support, W_ext, W_int, E_kin, sigma, eps]).T
     now = datetime.datetime.now().strftime('%S%f')
     onp.save(os.path.join(numpy_dir, f'jax_{now}.npy'), post_analysis_data)
-    # print(f"post_analysis_data = {post_analysis_data}")
     print(f"dtype = {post_analysis_data.dtype}")
 
 
 if __name__ == '__main__':
-    simulation()
+    # simulation(case1)
+    simulation(case2)
