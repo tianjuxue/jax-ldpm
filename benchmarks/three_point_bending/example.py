@@ -47,23 +47,37 @@ vtk_dir = os.path.join(output_dir, 'vtk')
 os.makedirs(vtk_dir, exist_ok=True)
 numpy_dir = os.path.join(output_dir, 'numpy')
 os.makedirs(numpy_dir, exist_ok=True)
-freecad_dir = os.path.join(input_dir, 'freecad/LDPM_mesh_8-16')
+freecad_dir = os.path.join(input_dir, 'freecad/LDPM_mesh_6-12')
 abaqus_dir = os.path.join(input_dir, 'abaqus')
 
 """
 Unit system: [mm], [N], [s]
 """
 
-# Abaqus uses 
-# time_to_vel = 0.002
+# For LDPM_mesh_8-16 (5 mm/s, used in the report)
 # vel = 5.
 # dt = 1e-7
+# ts = np.arange(0., dt*2010001, dt)
+# notch_width = 4.
+    
+# For LDPM_mesh_8-16 (15 mm/s, used in the report)  
+# vel = 15.
+# dt = 1e-7
+# ts = np.arange(0., dt*1010001, dt)
+# notch_width = 4.
 
-vel = 15.
-dt = 1e-7
-
+# For LDPM_mesh_8-16 (10 mm/s, not used in the report or paper)  
 # vel = 10.
 # dt = 2*1e-7
+# ts = np.arange(0., dt*510000, dt)
+# notch_width = 4.
+
+# For LDPM_mesh_6-12 (15 mm/s, used in the paper)  
+vel = 15.
+dt = 1e-7
+ts = np.arange(0., dt*1010001, dt)
+notch_width = 5.
+
 
 time_to_vel = 0.002
 acc = vel/time_to_vel
@@ -178,8 +192,8 @@ def simulation():
 
     ldpm_node_inds_CMOD = onp.argwhere((points[:, 1] < 1e-5) & \
                                        (points[:, 2] < 1e-5) & \
-                                       (points[:, 0] > 48. - 1e-5) & 
-                                       (points[:, 0] < 52. + 1e-5)).reshape(-1)
+                                       (points[:, 0] > 50. - notch_width/2. - 1e-5) & 
+                                       (points[:, 0] < 50. + notch_width/2.+ 1e-5)).reshape(-1)
 
 
     fem_bc_values_left = np.zeros(len(np.hstack(problem_left_block.fe.node_inds_list[:1])))
@@ -212,10 +226,6 @@ def simulation():
 
     pre_compute_bc, crt_bc, calc_forces_top = bc_tensile_disp_control_fix(points, Lx, Lz)
     bc_args = pre_compute_bc()
-
-    # ts = np.arange(0., dt*2010001, dt)
-    ts = np.arange(0., dt*1010001, dt)
-    # ts = np.arange(0., dt*510000, dt)
 
     disps = [0.]
     forces = [0.]

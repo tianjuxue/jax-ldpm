@@ -40,8 +40,9 @@ case1 = {'Area': 50*50,
          'name': '000'}
 case2 = {'Area': 50*74,
          'name': '001'}
-# Case1 refers to 8-16 mm mesh
-# Case2 refers to 6-12 mm mesh
+
+# Case1 refers to 8-16 mm mesh, used in the report
+# Case2 refers to 6-12 mm mesh, used in the paper
 
 def bc_disp_control(top_inds_node, bottom_inds_node):
     def pre_compute_bc():
